@@ -21,10 +21,32 @@ int infer(void)
         return -1;
     }
 
+	// Call the preprocess function to create a tensor
+    PyObject *pFuncPreprocess = PyObject_GetAttrString(pModule, "preprocess");
+    if (!pFuncPreprocess || !PyCallable_Check(pFuncPreprocess)) {
+        PyErr_Print();
+        Py_DECREF(pModule);
+        Py_Finalize();
+        return -1;
+    }
+
+    // Pass the image path to the preprocess function
+    PyObject *pArgsPreprocess = PyTuple_Pack(1, PyUnicode_FromString("example.jpg")); 
+    PyObject *pInputTensor = PyObject_CallObject(pFuncPreprocess, pArgsPreprocess);
+    Py_DECREF(pArgsPreprocess);
+    Py_DECREF(pFuncPreprocess);
+    if (!pInputTensor) {
+        PyErr_Print();
+        Py_DECREF(pModule);
+        Py_Finalize();
+        return -1;
+    }
+
     // Load the model by calling load_model()
     PyObject *pFuncLoadModel = PyObject_GetAttrString(pModule, "load_model");
     if (!pFuncLoadModel || !PyCallable_Check(pFuncLoadModel)) {
         PyErr_Print();
+        Py_DECREF(pInputTensor);
         Py_DECREF(pModule);
         Py_Finalize();
         return -1;
@@ -34,64 +56,77 @@ int infer(void)
     Py_DECREF(pFuncLoadModel);
     if (!pModel) {
         PyErr_Print();
+        Py_DECREF(pInputTensor);
         Py_DECREF(pModule);
         Py_Finalize();
         return -1;
     }
 
-    // Create a dummy input tensor (for demonstration)
+    // Call the infer function
     PyObject *pFuncInfer = PyObject_GetAttrString(pModule, "infer");
     if (!pFuncInfer || !PyCallable_Check(pFuncInfer)) {
         PyErr_Print();
         Py_DECREF(pModel);
-        Py_DECREF(pModule);
-        Py_Finalize();
-        return -1;
-    }
-
-    PyObject *pInputTensor = Py_BuildValue("((fff)(fff)(fff))",
-                                           0.1, 0.2, 0.3,
-                                           0.4, 0.5, 0.6,
-                                           0.7, 0.8, 0.9);
-    if (!pInputTensor) {
-        PyErr_Print();
-        Py_DECREF(pFuncInfer);
-        Py_DECREF(pModel);
-        Py_DECREF(pModule);
-        Py_Finalize();
-        return -1;
-    }
-
-    PyObject *pArgs = PyTuple_Pack(2, pModel, pInputTensor);
-    if (!pArgs) {
-        PyErr_Print();
         Py_DECREF(pInputTensor);
-        Py_DECREF(pFuncInfer);
-        Py_DECREF(pModel);
         Py_DECREF(pModule);
         Py_Finalize();
         return -1;
     }
 
-    PyObject *pOutput = PyObject_CallObject(pFuncInfer, pArgs);
+    PyObject *pArgsInfer = PyTuple_Pack(2, pModel, pInputTensor);
+    PyObject *pOutput = PyObject_CallObject(pFuncInfer, pArgsInfer);
+    Py_DECREF(pArgsInfer);
     Py_DECREF(pFuncInfer);
-    Py_DECREF(pArgs);
-    if (!pOutput) {
-        PyErr_Print();
-        Py_DECREF(pInputTensor);
-        Py_DECREF(pModel);
-        Py_DECREF(pModule);
-        Py_Finalize();
-        return -1;
-    }
-
-    // Print the output tensor
-    PyObject_Print(pOutput, stdout, 0);
-    printf("\n");
-
-    Py_DECREF(pOutput);
     Py_DECREF(pInputTensor);
     Py_DECREF(pModel);
+    Py_DECREF(pModule);
+    if (!pOutput) {
+        PyErr_Print();
+        Py_Finalize();
+        return -1;
+    }
+
+	// Postprocess the inference output
+    PyObject *pFuncPostprocess = PyObject_GetAttrString(pModule, "postprocess");
+    if (!pFuncPostprocess || !PyCallable_Check(pFuncPostprocess)) {
+        PyErr_Print();
+        Py_DECREF(pOutput);
+        Py_DECREF(pModule);
+        Py_Finalize();
+        return -1;
+    }
+
+	// 5 = top 5 results
+    PyObject *pArgsPostprocess = PyTuple_Pack(2, pOutput, PyLong_FromLong(5)); 
+    PyObject *pResults = PyObject_CallObject(pFuncPostprocess, pArgsPostprocess);
+    Py_DECREF(pArgsPostprocess);
+    Py_DECREF(pFuncPostprocess);
+    Py_DECREF(pOutput);
+    if (!pResults) {
+        PyErr_Print();
+        Py_DECREF(pModule);
+        Py_Finalize();
+        return -1;
+    }
+
+    // Print the results
+    PyObject *pIter = PyObject_GetIter(pResults);
+    PyObject *pItem;
+
+    printf("Top-5 Results:\n");
+    while ((pItem = PyIter_Next(pIter))) {
+        PyObject *pLabel = PyTuple_GetItem(pItem, 0);
+        PyObject *pProb = PyTuple_GetItem(pItem, 1);
+
+        const char *label = PyUnicode_AsUTF8(pLabel);
+        double prob = PyFloat_AsDouble(pProb);
+
+        printf("%s: %.4f\n", label, prob);
+        Py_DECREF(pItem);
+    }
+
+    Py_DECREF(pIter);
+    Py_DECREF(pResults);
     Py_DECREF(pModule);
 
     // Finalize Python interpreter
