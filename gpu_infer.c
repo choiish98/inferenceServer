@@ -1,119 +1,135 @@
 #include "gpu_infer.h"
 
-int infer(void)
-{
-    // Initialize Python interpreter
+// Initialize the Python interpreter and load the module
+InferenceContext *initialize_inference(const char *module_name) {
     Py_Initialize();
 
-	// Add this snippet before importing the module
-	PyObject *sysPath = PySys_GetObject("path");
-	PyObject *currentDir = PyUnicode_FromString(".");
-	PyList_Append(sysPath, currentDir);
-	Py_DECREF(currentDir);
+    PyObject *sysPath = PySys_GetObject("path");
+    PyObject *currentDir = PyUnicode_FromString(".");
+    PyList_Append(sysPath, currentDir);
+    Py_DECREF(currentDir);
 
-    // Import Python script (inference.py)
-    PyObject *pName = PyUnicode_FromString("inference");
+    PyObject *pName = PyUnicode_FromString(module_name);
     PyObject *pModule = PyImport_Import(pName);
-    Py_DECREF(pName);
     if (!pModule) {
         PyErr_Print();
         Py_Finalize();
-        return -1;
+        return NULL;
     }
 
-	// Call the preprocess function to create a tensor
-    PyObject *pFuncPreprocess = PyObject_GetAttrString(pModule, "preprocess");
-    if (!pFuncPreprocess || !PyCallable_Check(pFuncPreprocess)) {
-        PyErr_Print();
-        Py_DECREF(pModule);
-        Py_Finalize();
-        return -1;
-    }
+    Py_DECREF(pName);
 
-    // Pass the image path to the preprocess function
-    PyObject *pArgsPreprocess = PyTuple_Pack(1, PyUnicode_FromString("example.jpg")); 
-    PyObject *pInputTensor = PyObject_CallObject(pFuncPreprocess, pArgsPreprocess);
-    Py_DECREF(pArgsPreprocess);
-    Py_DECREF(pFuncPreprocess);
-    if (!pInputTensor) {
-        PyErr_Print();
-        Py_DECREF(pModule);
-        Py_Finalize();
-        return -1;
-    }
+    InferenceContext *ctx = malloc(sizeof(InferenceContext));
+    ctx->module = pModule;
+    ctx->model = NULL;
 
-    // Load the model by calling load_model()
-    PyObject *pFuncLoadModel = PyObject_GetAttrString(pModule, "load_model");
+    return ctx;
+}
+
+// Load the model
+int load_model(InferenceContext *ctx) {
+    PyObject *pFuncLoadModel;
+
+    pFuncLoadModel = PyObject_GetAttrString(ctx->module, "load_model");
     if (!pFuncLoadModel || !PyCallable_Check(pFuncLoadModel)) {
         PyErr_Print();
-        Py_DECREF(pInputTensor);
-        Py_DECREF(pModule);
-        Py_Finalize();
         return -1;
     }
 
-    PyObject *pModel = PyObject_CallObject(pFuncLoadModel, NULL);
-    Py_DECREF(pFuncLoadModel);
-    if (!pModel) {
+    ctx->model = PyObject_CallObject(pFuncLoadModel, NULL);
+    if (!ctx->model) {
         PyErr_Print();
-        Py_DECREF(pInputTensor);
-        Py_DECREF(pModule);
-        Py_Finalize();
         return -1;
     }
 
-    // Call the infer function
-    PyObject *pFuncInfer = PyObject_GetAttrString(pModule, "infer");
+    Py_DECREF(pFuncLoadModel);
+
+    return 0;
+}
+
+// Preprocess the image
+InputTensor *preprocess_image(InferenceContext *ctx, const char *image_path) {
+    PyObject *pFuncPreprocess;
+    PyObject *pArgsPreprocess;
+    PyObject *pInputTensor;
+
+    pFuncPreprocess = PyObject_GetAttrString(ctx->module, "preprocess");
+    if (!pFuncPreprocess || !PyCallable_Check(pFuncPreprocess)) {
+        PyErr_Print();
+        return NULL;
+    }
+
+    pArgsPreprocess = PyTuple_Pack(1, PyUnicode_FromString(image_path));
+    pInputTensor = PyObject_CallObject(pFuncPreprocess, pArgsPreprocess);
+    if (!pInputTensor) {
+        PyErr_Print();
+        return NULL;
+    }
+
+    Py_DECREF(pArgsPreprocess);
+    Py_DECREF(pFuncPreprocess);
+
+    InputTensor *input = malloc(sizeof(InputTensor));
+    input->tensor = pInputTensor;
+
+    return input;
+}
+
+// Perform inference
+InputTensor *run_inference(InferenceContext *ctx, InputTensor *input) {
+    PyObject *pFuncInfer;
+    PyObject *pArgsInfer;
+    PyObject *pOutput;
+
+    pFuncInfer = PyObject_GetAttrString(ctx->module, "infer");
     if (!pFuncInfer || !PyCallable_Check(pFuncInfer)) {
         PyErr_Print();
-        Py_DECREF(pModel);
-        Py_DECREF(pInputTensor);
-        Py_DECREF(pModule);
-        Py_Finalize();
-        return -1;
+        return NULL;
     }
 
-    PyObject *pArgsInfer = PyTuple_Pack(2, pModel, pInputTensor);
-    PyObject *pOutput = PyObject_CallObject(pFuncInfer, pArgsInfer);
-    Py_DECREF(pArgsInfer);
-    Py_DECREF(pFuncInfer);
-    Py_DECREF(pInputTensor);
-    Py_DECREF(pModel);
-    Py_DECREF(pModule);
+    pArgsInfer = PyTuple_Pack(2, ctx->model, input->tensor);
+    pOutput = PyObject_CallObject(pFuncInfer, pArgsInfer);
     if (!pOutput) {
         PyErr_Print();
-        Py_Finalize();
-        return -1;
+        return NULL;
     }
 
-	// Postprocess the inference output
-    PyObject *pFuncPostprocess = PyObject_GetAttrString(pModule, "postprocess");
+    Py_DECREF(pArgsInfer);
+    Py_DECREF(pFuncInfer);
+
+    InputTensor *output = malloc(sizeof(InputTensor));
+    output->tensor = pOutput;
+
+    return output;
+}
+
+// Postprocess the inference output
+int postprocess_results(InferenceContext *ctx, InputTensor *output, int top_k) {
+    PyObject *pFuncPostprocess;
+    PyObject *pArgsPostprocess;
+    PyObject *pResults;
+
+    pFuncPostprocess = PyObject_GetAttrString(ctx->module, "postprocess");
     if (!pFuncPostprocess || !PyCallable_Check(pFuncPostprocess)) {
         PyErr_Print();
-        Py_DECREF(pOutput);
-        Py_DECREF(pModule);
-        Py_Finalize();
         return -1;
     }
 
-	// 5 = top 5 results
-    PyObject *pArgsPostprocess = PyTuple_Pack(2, pOutput, PyLong_FromLong(5)); 
-    PyObject *pResults = PyObject_CallObject(pFuncPostprocess, pArgsPostprocess);
-    Py_DECREF(pArgsPostprocess);
-    Py_DECREF(pFuncPostprocess);
-    Py_DECREF(pOutput);
+    pArgsPostprocess = PyTuple_Pack(2, output->tensor, PyLong_FromLong(top_k));
+    pResults = PyObject_CallObject(pFuncPostprocess, pArgsPostprocess);
     if (!pResults) {
         PyErr_Print();
-        Py_DECREF(pModule);
-        Py_Finalize();
         return -1;
     }
+
+    Py_DECREF(pArgsPostprocess);
+    Py_DECREF(pFuncPostprocess);
 
     // Print the results
     PyObject *pIter = PyObject_GetIter(pResults);
     PyObject *pItem;
 
-    printf("Top-5 Results:\n");
+    printf("Top-%d Results:\n", top_k);
     while ((pItem = PyIter_Next(pIter))) {
         PyObject *pLabel = PyTuple_GetItem(pItem, 0);
         PyObject *pProb = PyTuple_GetItem(pItem, 1);
@@ -127,10 +143,25 @@ int infer(void)
 
     Py_DECREF(pIter);
     Py_DECREF(pResults);
-    Py_DECREF(pModule);
-
-    // Finalize Python interpreter
-    Py_Finalize();
 
     return 0;
 }
+
+// Free resources
+void free_tensor(InputTensor *tensor) {
+    if (tensor) {
+        Py_DECREF(tensor->tensor);
+        free(tensor);
+    }
+}
+
+void free_inference_context(InferenceContext *ctx) {
+    if (ctx) {
+        if (ctx->model) Py_DECREF(ctx->model);
+        Py_DECREF(ctx->module);
+        free(ctx);
+    }
+
+    Py_Finalize();
+}
+

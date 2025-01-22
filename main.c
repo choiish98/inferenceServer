@@ -143,7 +143,44 @@ static void measureGPUDirect(int size)
 
 	printf("%s: start\n", __func__);
 
+	/* load python module */
+	InferenceContext *ctx = initialize_inference("inference");
+	if (!ctx) {
+		printf("initialize_inference failed\n");
+		exit(EXIT_FAILURE);
+	}
 
+	/* load model */
+	int ret = load_model(ctx);
+	if (ret) {
+		printf("load_model failed\n");
+		exit(EXIT_FAILURE);
+	}
+
+	/* load image file & preprocessing */
+	InputTensor *input = preprocess_image(ctx, "example.jpg");
+	if (!input) {
+		printf("preprocess_image failed\n");
+		exit(EXIT_FAILURE);
+	}
+
+	/* Inference */
+	InputTensor *output = run_inference(ctx, input);
+	if (!output) {
+		printf("run_inference failed\n");
+		exit(EXIT_FAILURE);
+	}
+
+	/* postprocessing & print result */
+	ret = postprocess_results(ctx, output, 5 /* top k ranks */);
+	if (ret) {
+		printf("postprocess_results failed\n");
+		exit(EXIT_FAILURE);
+	}
+
+	free_tensor(input);
+	free_tensor(output);
+	free_inference_context(ctx);
 }
 
 static void get_addr(char *dst, struct sockaddr_in *addr)
@@ -201,12 +238,6 @@ int main(int argc, char *argv[])
 		goto test;
 	}
 
-	int ret = infer();
-	if (ret) {
-		printf("infer failed\n");
-		return -1;
-	}
-
 	/* RDMA init 
 	saddr.sin_family = AF_INET;
 
@@ -238,7 +269,8 @@ int main(int argc, char *argv[])
 
 test:
 	if (method == 0) {
-		measureCudaMemcpy(size);
+		measureGPUDirect(size);
+		//measureCudaMemcpy(size);
 	} else if (method == 1) {
 		measureGPUZeroCopy(size);
 	} else if (method == 2) {

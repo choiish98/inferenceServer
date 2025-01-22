@@ -1,1 +1,3 @@
 performance comparsion of memory copy between GPU and CPU
+
+./main [-s <size>] [-m <method>]
