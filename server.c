@@ -9,8 +9,10 @@
 #include <time.h>
 
 #include "rdma.h"
-#include "gpu_mem.h"
-#include "gpu_infer.h"
+#include "gpu.h"
+
+const char *module_name = "inference";
+const size_t input_size = 224 * 224 * 3 * sizeof(float);
 
 struct sockaddr_in saddr;
 
@@ -47,13 +49,14 @@ static void *process_client(void *arg)
 }
 */
 
+/*
 static void measureCudaMemcpy(int size)
 {
 	const int iter = 100;
 
 	printf("%s: start\n", __func__);
 
-	/* Memory allocation */
+	// Memory allocation
 	float *hostMemory = (float *) calloc(1, size);
     if (!hostMemory) {
         printf("calloc failed\n");
@@ -68,12 +71,12 @@ static void measureCudaMemcpy(int size)
 		exit(EXIT_FAILURE);
 	}
 
-	/* Data load & preprocessing */ 
+	// Data load & preprocessing
 	for (int i = 0; i < size/sizeof(float); i++) {
 		hostMemory[i] = (float) i;
 	}
 
-	/* Inference */
+	// Inference
 	clock_t start, end;
 	double total = 0;
 
@@ -98,7 +101,7 @@ static void measureGPUZeroCopy(int size)
 
 	printf("%s: start\n", __func__);
 
-	/* Memory allocation */
+	// Memory allocation
 	float *hostMemory;
 	gpuPinnedMemAlloc((void **) &hostMemory, size);
 	if (!hostMemory) {
@@ -114,12 +117,12 @@ static void measureGPUZeroCopy(int size)
 		exit(EXIT_FAILURE);
 	}
 
-	/* Data load & preprocessing */ 
+	// Data load & preprocessing
 	for (int i = 0; i < size; i++) {
 		hostMemory[i] = (int) i;
 	}
 
-	/* Inference */
+	// Inference
 	clock_t start, end;
 	double total = 0;
 
@@ -136,50 +139,85 @@ static void measureGPUZeroCopy(int size)
 
 	gpuPinnedMemFree(hostMemory);
 }
+*/
 
-static void measureGPUDirect(int size)
+static void measureGPUDirect(void)
 {
 //	const int iter = 100;
 
 	printf("%s: start\n", __func__);
 
-	/* load python module */
-	InferenceContext *ctx = initialize_inference("inference");
+	// load python module
+	InferenceContext *ctx = initialize_inference(module_name);
 	if (!ctx) {
 		printf("initialize_inference failed\n");
 		exit(EXIT_FAILURE);
 	}
 
-	/* load model */
+	// load model
 	int ret = load_model(ctx);
 	if (ret) {
 		printf("load_model failed\n");
-		exit(EXIT_FAILURE);
+		goto free_ctx;
 	}
 
-	/* load image file & preprocessing */
-	InputTensor *input = preprocess_image(ctx, "example.jpg");
+	// load image file & preprocessing
+	InputTensor *input = allocate_gpu_memory(input_size);
 	if (!input) {
-		printf("preprocess_image failed\n");
-		exit(EXIT_FAILURE);
+		printf("allocate_gpu_memory failed\n");
+		goto free_ctx;
 	}
 
-	/* Inference */
+	void *cpu_data = malloc(input_size);
+	if (!cpu_data) {
+		printf("malloc failed\n");
+		goto free_input;
+	}
+
+	memset(cpu_data, 0, input_size);
+
+	printf("preprocess\n");
+	PyObject *processed_tensor = preprocess_on_cpu(ctx, cpu_data, input_size);
+	if (!processed_tensor) {
+		printf("preprocess_on_cpu failed\n");
+		goto free_cpu;
+	}
+
+	printf("copy to gpu\n");
+	ret = copy_to_gpu(input, processed_tensor);
+	if (ret) {
+		printf("copy_to_gpu failed\n");
+		goto free_cpu;
+	}
+
+	printf("inference\n");
+	// Inference
 	InputTensor *output = run_inference(ctx, input);
 	if (!output) {
 		printf("run_inference failed\n");
-		exit(EXIT_FAILURE);
+		goto free_cpu;
 	}
 
-	/* postprocessing & print result */
-	ret = postprocess_results(ctx, output, 5 /* top k ranks */);
-	if (ret) {
+	printf("post process\n");
+	// postprocessing & print result
+	PyObject *result = postprocess_on_cpu(ctx, output->tensor);
+	if (!result) {
 		printf("postprocess_results failed\n");
-		exit(EXIT_FAILURE);
+		goto free_output;
 	}
 
-	free_tensor(input);
+	// Print the postprocessing result
+	printf("Postprocessing result:\n");
+	PyObject_Print(result, stdout, 0);
+	printf("\n");	
+
+free_output:
 	free_tensor(output);
+free_cpu:
+	free(cpu_data);
+free_input:
+	free_tensor(input);
+free_ctx:
 	free_inference_context(ctx);
 }
 
@@ -212,8 +250,7 @@ static void usage(void)
 int main(int argc, char *argv[])
 {
 	int option;
-	int method = 0;
-	int size = 0;
+	int method;
 
 	while ((option = getopt(argc, argv, "m:c:p:s:")) != -1) {
 		switch (option) {
@@ -225,9 +262,6 @@ int main(int argc, char *argv[])
 				break;
 			case 'p':
 				saddr.sin_port = htons(strtol(optarg, NULL, 0));
-				break;
-			case 's':
-				size = strtol(optarg, NULL, 0);
 				break;
 			default:
 				usage();
@@ -248,16 +282,17 @@ int main(int argc, char *argv[])
 	printf("%s:%d\n", __func__, __LINE__);
 	while (!rdma_is_connected());
 	printf("%s:%d\n", __func__, __LINE__);
-	*/
 
 	printf("Successfully connected\n");
+	*/
 
-	/* Register GPU memory to RDMA memory region */
+	/* Register GPU memory to RDMA memory region 
 	void *gpu_buf = init_gpu(size, "bdf");
 	if (!gpu_buf) {
 		printf("init_gpu failed\n");
 		return -1;
 	}
+	*/
 
 	/*
 	int ret = rdma_register_mr(gpu_buf, size, true);
@@ -268,9 +303,9 @@ int main(int argc, char *argv[])
 	*/
 
 test:
+	/*
 	if (method == 0) {
-		measureGPUDirect(size);
-		//measureCudaMemcpy(size);
+		measureCudaMemcpy(size);
 	} else if (method == 1) {
 		measureGPUZeroCopy(size);
 	} else if (method == 2) {
@@ -282,6 +317,9 @@ test:
 	} else {
 		usage();
 	}
+	*/
+
+	measureGPUDirect();
 
     return 0;
 }             
