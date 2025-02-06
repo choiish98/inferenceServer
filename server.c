@@ -8,143 +8,15 @@
 #include <malloc.h>
 #include <time.h>
 
-#include "rdma.h"
+//#include "mtcp.h"
+//#include "tcp.h"
 #include "gpu.h"
 
 const char *module_name = "inference";
-const size_t input_size = 224 * 224 * 3 * sizeof(float);
+const char *model_name = "resnet50";
 
-struct sockaddr_in saddr;
-
-/*
-pthread_t server_thread;
-pthread_t client_thread;
-
-static void *process_server(void *arg)
+static void measure(void)
 {
-	int size = *(int *) arg;
-
-	printf("%s:%d\n", __func__, __LINE__);
-	int ret = rdma_open_server(&saddr, size);
-	if (ret) {
-		printf("rdma_open_server failed\n");
-	}
-
-	printf("%s:%d\n", __func__, __LINE__);
-	pthread_exit(NULL);
-}
-
-static void *process_client(void *arg)
-{
-	int size = *(int *) arg;
-
-	printf("%s:%d\n", __func__, __LINE__);
-	int ret = rdma_open_client(&saddr, &saddr, size);
-	if (ret) {
-		printf("rdma_open_client failed\n");
-	}
-
-	printf("%s:%d\n", __func__, __LINE__);
-	pthread_exit(NULL);
-}
-*/
-
-/*
-static void measureCudaMemcpy(int size)
-{
-	const int iter = 100;
-
-	printf("%s: start\n", __func__);
-
-	// Memory allocation
-	float *hostMemory = (float *) calloc(1, size);
-    if (!hostMemory) {
-        printf("calloc failed\n");
-        exit(EXIT_FAILURE);
-    }
-
-	float *gpuMemory;
-	gpuMemAlloc((void *) &gpuMemory, size);
-	if (!gpuMemory) {
-		printf("gpuMemAlloc failed\n");
-		free(hostMemory);
-		exit(EXIT_FAILURE);
-	}
-
-	// Data load & preprocessing
-	for (int i = 0; i < size/sizeof(float); i++) {
-		hostMemory[i] = (float) i;
-	}
-
-	// Inference
-	clock_t start, end;
-	double total = 0;
-
-	for (int i = 0; i < iter; i++) {
-		start = clock();
-		inferCudaMemcpy(hostMemory, gpuMemory, size);
-		end = clock();
-
-		total += (double) (end - start) / CLOCKS_PER_SEC;
-	}
-
-	printf("[cudaMemcpy] Size: %d Bytes\n Avg Latency: %.6f seconds\n",
-			size, total / iter);
-
-	gpuMemFree(gpuMemory);
-	free(hostMemory);
-}
-
-static void measureGPUZeroCopy(int size)
-{
-	const int iter = 100;
-
-	printf("%s: start\n", __func__);
-
-	// Memory allocation
-	float *hostMemory;
-	gpuPinnedMemAlloc((void **) &hostMemory, size);
-	if (!hostMemory) {
-		printf("gpuPinnedMemAlloc failed\n");
-		exit(1);
-	}
-
-	float *gpuMemory; 
-	gpuPinnedMemMap((void **) &hostMemory, (void **) &gpuMemory);
-	if (!gpuMemory) {
-		printf("gpuPinnedMemMap failed\n");
-		free(hostMemory);
-		exit(EXIT_FAILURE);
-	}
-
-	// Data load & preprocessing
-	for (int i = 0; i < size; i++) {
-		hostMemory[i] = (int) i;
-	}
-
-	// Inference
-	clock_t start, end;
-	double total = 0;
-
-	for (int i = 0; i < iter; i++) {
-		start = clock();
-		inferZeroCopy(gpuMemory, size);
-		end = clock();
-
-		total += (double) (end - start) / CLOCKS_PER_SEC;
-	}
-
-	printf("[GPU Zero Copy] Size: %d Bytes, Avg Latency: %.6f seconds\n",
-			size, total / iter);
-
-	gpuPinnedMemFree(hostMemory);
-}
-*/
-
-static void measureGPUDirect(void)
-{
-//	const int iter = 100;
-
 	printf("%s: start\n", __func__);
 
 	// load python module
@@ -155,122 +27,54 @@ static void measureGPUDirect(void)
 	}
 
 	// load model
-	int ret = load_model(ctx);
+	int ret = load_model(ctx, model_name);
 	if (ret) {
 		printf("load_model failed\n");
-		goto free_ctx;
+		goto free;
 	}
 
 	// load image file & preprocessing
-	InputTensor *input = allocate_gpu_memory(input_size);
-	if (!input) {
-		printf("allocate_gpu_memory failed\n");
-		goto free_ctx;
-	}
-
-	void *cpu_data = malloc(input_size);
-	if (!cpu_data) {
-		printf("malloc failed\n");
-		goto free_input;
-	}
-
-	memset(cpu_data, 0, input_size);
-
-	printf("preprocess\n");
-	PyObject *processed_tensor = preprocess_on_cpu(ctx, cpu_data, input_size);
-	if (!processed_tensor) {
+	ctx->input = preprocess_on_cpu(ctx, "data/example.jpg");
+	if (!ctx->input) {
 		printf("preprocess_on_cpu failed\n");
-		goto free_cpu;
+		goto free;
 	}
 
-	printf("copy to gpu\n");
-	ret = copy_to_gpu(input, processed_tensor);
-	if (ret) {
-		printf("copy_to_gpu failed\n");
-		goto free_cpu;
-	}
-
-	printf("inference\n");
 	// Inference
-	InputTensor *output = run_inference(ctx, input);
-	if (!output) {
+	ctx->output = run_inference(ctx);
+	if (!ctx->output) {
 		printf("run_inference failed\n");
-		goto free_cpu;
+		goto free;
 	}
 
-	printf("post process\n");
-	// postprocessing & print result
-	PyObject *result = postprocess_on_cpu(ctx, output->tensor);
-	if (!result) {
+	// postprocessing
+	ctx->result = postprocess_on_cpu(ctx);
+	if (!ctx->result) {
 		printf("postprocess_results failed\n");
-		goto free_output;
+		goto free;
 	}
 
 	// Print the postprocessing result
 	printf("Postprocessing result:\n");
-	PyObject_Print(result, stdout, 0);
+	PyObject_Print(ctx->result, stdout, 0);
 	printf("\n");	
 
-free_output:
-	free_tensor(output);
-free_cpu:
-	free(cpu_data);
-free_input:
-	free_tensor(input);
-free_ctx:
-	free_inference_context(ctx);
+free:
+	free_inference(ctx);
 }
 
-static void get_addr(char *dst, struct sockaddr_in *addr)
+int main(void)
 {
-	struct addrinfo *res;
-
-	int ret = getaddrinfo(dst, NULL, NULL, &res);
+	/* HTTP server init
+	int ret = init_httpTCPServer(core_limit, conf_file);
 	if (ret) {
-		printf("getaddrinfo failed\n");
-		exit(1);
+		printf("init_httpServer failed\n");
+		return -1;
 	}
-
-	if (res->ai_family == PF_INET) {
-		memcpy(addr, res->ai_addr, sizeof(struct sockaddr_in));
-	} else {
-		exit(1);
-	}
-
-	freeaddrinfo(res);
-}
-
-static void usage(void)
-{
-	printf("[Usage]: ");
-	printf("./main [-m <method>] [-c <client ip>] [-p <port>] [-s <data size>]\n");
-	exit(1);
-}
-
-int main(int argc, char *argv[])
-{
-	int option;
-	int method;
-
-	while ((option = getopt(argc, argv, "m:c:p:s:")) != -1) {
-		switch (option) {
-			case 'm':
-				method = strtol(optarg, NULL, 0);
-				break;
-			case 'c':
-				get_addr(optarg, &saddr);
-				break;
-			case 'p':
-				saddr.sin_port = htons(strtol(optarg, NULL, 0));
-				break;
-			default:
-				usage();
-		}
-	}
-
-	if (method > 1) {
-		goto test;
-	}
+	*/
+	
+	// Request Manager init
+	// ??
 
 	/* RDMA init 
 	saddr.sin_family = AF_INET;
@@ -302,24 +106,7 @@ int main(int argc, char *argv[])
 	}
 	*/
 
-test:
-	/*
-	if (method == 0) {
-		measureCudaMemcpy(size);
-	} else if (method == 1) {
-		measureGPUZeroCopy(size);
-	} else if (method == 2) {
-		measureGPUDirect(size);
-	} else if (method == 3) {
-		measureCudaMemcpy(size);
-		measureGPUZeroCopy(size);
-		measureGPUDirect(size);
-	} else {
-		usage();
-	}
-	*/
-
-	measureGPUDirect();
+	measure();
 
     return 0;
 }             

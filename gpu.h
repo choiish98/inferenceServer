@@ -16,39 +16,20 @@ extern "C" {
 typedef struct {
 	PyObject *module;
 	PyObject *model;
+	PyObject *input;
+	PyObject *output;
+	PyObject *result;
 } InferenceContext;
 
-typedef struct {
-	PyObject *tensor;
-	void *gpu_data;
-	size_t size;
-} InputTensor;
-
-void *init_gpu(size_t, const char *);
-int free_gpu(void *);
-
-void gpuMemAlloc(void **, int);
-void gpuMemFree(float *);
-
-void gpuPinnedMemAlloc(void **, int);
-void gpuPinnedMemMap(void **, void **);
-void gpuPinnedMemFree(float *);
-
-int inferCudaMemcpy(float *, float *, int);
-int inferZeroCopy(float *, int);
-
 InferenceContext *initialize_inference(const char *);
-int load_model(InferenceContext *);
-void free_tensor(InputTensor *);
-void free_inference_context(InferenceContext *);
+void free_inference(InferenceContext *);
 
-InputTensor *allocate_gpu_memory(size_t);
-int copy_to_gpu(InputTensor *, PyObject *);
+int load_model(InferenceContext *, const char *);
 
-PyObject *preprocess_on_cpu(InferenceContext *, const void *, size_t);
-PyObject *postprocess_on_cpu(InferenceContext *, PyObject *);
+PyObject *preprocess_on_cpu(InferenceContext *, char *);
+PyObject *postprocess_on_cpu(InferenceContext *);
 
-InputTensor *run_inference(InferenceContext *, InputTensor *);
+PyObject *run_inference(InferenceContext *);
 
 #ifdef __cplusplus
 }
