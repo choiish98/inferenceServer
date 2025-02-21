@@ -1,3 +1,15 @@
-performance comparsion of memory copy between GPU and CPU
+inference server
 
-./main [-s <size>] [-m <method>]
+./server [-c <process core>] [-n <the number of core>] [-t <test>]
+
+example
+```
+# test mode
+sudo -E ./server -t 1
+
+# server
+sudo -E ./server -c 0 -n 1
+
+#client
+sudo -E ./client -c 0 -n 1
+```

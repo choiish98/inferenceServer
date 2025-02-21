@@ -21,15 +21,15 @@ default: server #client
 	$(MSG) "    CC $<"
 	$(HIDE) $(CC) -c $< $(CFLAGS) ${INC}
 
-server: server.o gpu.o 
+server: server.o gpuManager.o httpServer.o
 	$(MSG) "    LD $^"
 	$(HIDE) $(NVCC) $(NVCCOBJS) $(LDLIBS) $^ -o $@
 
-#client: client.o gpu.o mtcp.o
+#client: client.o gpuManager.o httpServer.o
 #	$(MSG) "    LD $^"
 #	$(HIDE) $(NVCC) $(NVCCOBJS) $(LDLIBS) $^ -o $@
 
 clean:
 	$(MSG) "    CLEAN server client"
-	$(HIDE) rm -rf server client *.o *.d __pycache__
+	$(HIDE) sudo rm -rf server client *.o *.d __pycache__
 

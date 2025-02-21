@@ -1,5 +1,5 @@
 extern "C" {
-	#include "gpu.h"
+	#include "gpuManager.h"
 }
 
 // Initialize the Python interpreter and load the module

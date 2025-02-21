@@ -1,9 +1,7 @@
-#ifndef GPU_H
-#define GPU_H
+#ifndef GPUMANAGER_H
+#define GPUMANAGER_H
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "common.h"
 
 #include <Python.h>
 #include <cuda.h>
