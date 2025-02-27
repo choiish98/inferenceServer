@@ -16,7 +16,7 @@ typedef struct {
 	PyObject *model;
 	PyObject *input;
 	PyObject *output;
-	PyObject *result;
+	char *result;
 } InferenceContext;
 
 InferenceContext *initialize_inference(const char *);
@@ -24,8 +24,8 @@ void free_inference(InferenceContext *);
 
 int load_model(InferenceContext *, const char *);
 
-PyObject *preprocess_on_cpu(InferenceContext *, char *);
-PyObject *postprocess_on_cpu(InferenceContext *);
+PyObject *preprocess_on_cpu(InferenceContext *, char *, int);
+char *postprocess_on_cpu(InferenceContext *);
 
 PyObject *run_inference(InferenceContext *);
 

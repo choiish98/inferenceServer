@@ -1,75 +1,59 @@
 #include "common.h"
 
+#include <stdatomic.h>
+
+#include "encoder.h"
 #include "httpServer.h"
 #include "gpuManager.h"
 
 const char *module_name = "inference";
-const char *model_name = "resnet50";
+const char *test_model = "resnet50";
+const char *image_path = "data/example.jpg";
 
-static pthread_t reqThread;
-static pthread_t resThread;
+static pthread_t httpThread[MAX_CPUS];
+static pthread_t gpuThread[MAX_CPUS];
+static pthread_t rmThread[MAX_CPUS];
 
-// inference example
-static int infer(char *model_name, char *image_data, char *rst)
+static struct sq *gsq[MAX_CPUS];
+static struct cq *gcq[MAX_CPUS];
+
+static atomic_int sq_cnt[MAX_CPUS];
+static atomic_int cq_cnt[MAX_CPUS];
+
+static int get_test_data(char *buf, int *size)
 {
-	printf("%s: start\n", __func__);
+    FILE *fp = fopen(image_path, "rb");
+    if (!fp) {
+        printf("fopen failed: %s\n", __func__);
+        return -1;
+    }
 
-	// load python module
-	InferenceContext *ctx = initialize_inference(module_name);
-	if (!ctx) {
-		printf("initialize_inference failed\n");
-		exit(EXIT_FAILURE);
-	}
+    fseek(fp, 0, SEEK_END);
+    *size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
 
-	// load model
-	int ret = load_model(ctx, model_name);
-	if (ret) {
-		printf("load_model failed\n");
-		goto free;
-	}
+    *size = fread(buf, sizeof(char), *size, fp);
+	if (!*size) {
+        printf("fread failed\n");
+        return -1;
+    }
 
-	// load image file & preprocessing
-	ctx->input = preprocess_on_cpu(ctx, "data/example.jpg");
-	if (!ctx->input) {
-		printf("preprocess_on_cpu failed\n");
-		goto free;
-	}
+    fclose(fp);
 
-	// Inference
-	ctx->output = run_inference(ctx);
-	if (!ctx->output) {
-		printf("run_inference failed\n");
-		goto free;
-	}
-
-	// postprocessing
-	ctx->result = postprocess_on_cpu(ctx);
-	if (!ctx->result) {
-		printf("postprocess_results failed\n");
-		goto free;
-	}
-
-	/* Print the postprocessing result
-	printf("Postprocessing result:\n");
-	PyObject_Print(ctx->result, stdout, 0);
-	printf("\n");	
-	*/
-
-	memcpy(rst, (const char *) ctx->result, sizeof(ctx->result));
-
-	return 0;
-free:
-	free_inference(ctx);
-	return -1;
+    return 0;
 }
 
-static void *cq_worker(void *arg)
+static void *gpu_worker(void *arg)
 {
-	request_manager rm = *(request_manager *) arg;
-	int ret;
+	InferenceContext *ctx;
+	struct sq *sq;
+	struct cq *cq;
+	request_t *req;
+	int core;
+	int cnt;
+	int i, ret;
 
-	// set core affinity
-	int core = rm.cpu;
+	core = *(int *) arg;
 	cpu_set_t cpuset;
 	CPU_ZERO(&cpuset);
 	CPU_SET(core, &cpuset);
@@ -80,24 +64,97 @@ static void *cq_worker(void *arg)
 		return NULL;
 	}
 
-	// polling CQ
-	response_t *res;
+	ctx = initialize_inference(module_name);
+	if (!ctx) {
+		printf("initialize_inference failed\n");
+		return NULL;
+	}
+
+	sq = gsq[core];
+	cq = gcq[core];
+
+	printf("gpu worker is working now ...\n");
+
 	while (true) {
-		res = TAILQ_FIRST(&rm.cq);
-		if (!res) {
+		cnt = atomic_load(&sq_cnt[core]);
+
+		for (i = 0; i < cnt; i++) {
+			req = TAILQ_FIRST(sq);
+			if (!req) {
+				continue;
+			}
+			TAILQ_REMOVE(sq, req, req_entries);
+
+			request_t *res = calloc(1, sizeof(request_t));
+			if (!res) {
+				printf("calloc failed\n");
+				return NULL;
+			}
+	
+			if (!req->model) {
+				memcpy(req->model, test_model, sizeof(*test_model));
+			}
+
+			ret = load_model(ctx, req->model);
+			if (ret) {
+				printf("load_model failed\n");
+				goto failed;
+			}
+
+			if (!req->image || !strcmp(req->image, "")) {
+				ret = get_test_data(req->image, &req->size);
+				if (!req->image || ret) {
+					printf("get_test_data failed\n");
+					goto failed;
+				}
+			} else {
+				if (base64_decode(req->image, sizeof(req->image), &req->size)) {
+					printf("base64_decode failed\n");
+					goto failed;
+				}
+			}
+
+			ctx->input = preprocess_on_cpu(ctx, req->image, req->size);
+			if (!ctx->input) {
+				printf("preprocess_on_cpu failed\n");
+				goto failed;
+			}
+
+			ctx->output = run_inference(ctx);
+			if (!ctx->output) {
+				printf("run_inference failed\n");
+				goto failed;
+			}
+
+			const char *result = postprocess_on_cpu(ctx);
+			if (!result) {
+				printf("postprocess_on_cpu failed\n");
+				goto failed;
+			}
+
+			//printf("result:\n%s\n", result);
+
+			res->sock_id = req->sock_id;
+			res->ep = req->ep;
+			res->size = req->size;
+			memcpy(req->result, (char *) result, strlen(result));
+			TAILQ_INSERT_TAIL(cq, res, req_entries);
+
+			atomic_fetch_add(&cq_cnt[core], 1);
+			atomic_fetch_sub(&sq_cnt[core], 1);
+			continue;
+
+failed:
+			res->sock_id = req->sock_id;
+			res->ep = req->ep;
+			res->size = req->size;
+			memcpy(res->result, "failed", sizeof("failed"));
+			TAILQ_INSERT_TAIL(cq, res, req_entries);
+			
+			atomic_fetch_add(&cq_cnt[core], 1);
+			atomic_fetch_sub(&sq_cnt[core], 1);
 			continue;
 		}
-
-		TAILQ_REMOVE(&rm.cq, res, res_entries);
-
-		// copy to rsp buffer
-		//memcpy(&ctx->svars[core]->result, res->result, RESULT_SIZE);
-
-		// epoll event
-		struct epoll_event event;
-		event.events = EPOLLOUT;
-		event.data.fd = res->sock_id;
-		epoll_ctl(res->ep, EPOLL_CTL_MOD, res->sock_id, &event);
 	}
 
 	pthread_exit(NULL);
@@ -105,13 +162,15 @@ static void *cq_worker(void *arg)
 	return NULL;
 }
 
-static void *sq_worker(void *arg)
+static void *rm_worker(void *arg)
 {
-	int ret;
-	request_manager rm = *(request_manager *) arg;
+	struct cq *cq;
+	request_t *req;
+	int core;
+	int cnt;
+	int i, ret;
 
-	// set core affinity
-	int core = rm.cpu;
+	core = *(int *) arg;
 	cpu_set_t cpuset;
 	CPU_ZERO(&cpuset);
 	CPU_SET(core, &cpuset);
@@ -122,31 +181,139 @@ static void *sq_worker(void *arg)
 		return NULL;
 	}
 
-	// polling SQ
-	request_t *req;
+	cq = gcq[core];
+
+	printf("CQ worker is working now...\n");
+
 	while (true) {
-		req = TAILQ_FIRST(&rm.sq);
-		if (!req) {
-			continue;
+		cnt = atomic_load(&cq_cnt[core]);
+
+		for (i = 0; i < cnt; i++) {
+			req = TAILQ_FIRST(cq);
+			if (!req) {
+				continue;
+			}
+
+			TAILQ_REMOVE(cq, req, req_entries);
+
+			struct epoll_event event;
+			event.events = EPOLLOUT;
+			event.data.fd = req->sock_id;
+			epoll_ctl(req->ep, EPOLL_CTL_MOD, req->sock_id, &event);
+
+			atomic_fetch_sub(&cq_cnt[core], 1);
 		}
-
-		TAILQ_REMOVE(&rm.sq, req, req_entries);
-
-		// inference
-		ret = infer(req->model, req->image, req->result);
-		if (ret) {
-			printf("infer failed\n");
-			return NULL;
-		}
-
-		// response
-		response_t *res = calloc(1, sizeof(response_t));
-		res->sock_id = req->sock_id;
-		res->ep = req->ep;
-		memcpy(res->result, req->result, RESULT_SIZE);
-		TAILQ_INSERT_TAIL(&rm.cq, res, res_entries);
 	}
 
+	pthread_exit(NULL);
+
+	return NULL;
+}
+
+static void *http_worker(void *arg)
+{
+	struct sq *sq;
+	struct epoll_event events[MAX_EVENTS];
+	struct flow_context *ctx;
+	int ep;
+	int listener;
+	int nevents;
+	int do_accept;
+	int core;
+	int i, ret;
+
+	core = *(int *) arg;
+	cpu_set_t cpuset;
+	CPU_ZERO(&cpuset);
+	CPU_SET(core, &cpuset);
+
+	ret = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+	if (ret) {
+		perror("pthread_setaffinity_np failed\n");
+		return NULL;
+	}
+
+	sq = gsq[core];
+
+	ctx = init_server(core);
+	if (!ctx) {
+		printf("init_server failed\n");
+		return NULL;
+	}
+	ep = ctx->ep;
+
+	listener = create_socket(ep);
+	if (listener < 0) {
+		printf("create_socket failed\n");
+		return NULL;
+	}
+
+	sq = gsq[core];
+
+	printf("Server is listening on port %d...\n", PORT);
+
+	while (true) {
+		nevents = epoll_wait(ep, events, MAX_EVENTS, -1);
+		if (nevents < 0) {
+			if (errno != EINTR) {
+				perror("epoll_wait failed");
+			}
+
+			break;
+		}
+
+		do_accept = false;
+		for (i = 0; i < nevents; i++) {
+			if (events[i].data.fd == listener) {
+				do_accept = true;
+			} else if (events[i].events & EPOLLERR) {
+				printf("[CPU %d]: Error on socket %d\n", 
+						core, events[i].data.fd);
+				close_connection(ep, events[i].data.fd);
+			} else if (events[i].events & EPOLLIN) {
+				request_t *req = (request_t *) malloc(sizeof(request_t));
+				if (!req) {
+					perror("malloc failed");
+					return NULL;
+				}
+
+				ret = handle_read(events[i].data.fd, ctx,
+						&ctx->svars[events[i].data.fd], req);
+				if (ret) {
+					if (errno != EAGAIN) {
+						close_connection(ep, events[i].data.fd);
+					}
+
+					printf("[CPU %d]: Error on socket %d\n",
+							core, events[i].data.fd);
+				}
+
+				TAILQ_INSERT_TAIL(sq, req, req_entries);
+				atomic_fetch_add(&sq_cnt[core], 1);
+			} else if (events[i].events & EPOLLOUT) {
+				ret = handle_write(events[i].data.fd, ctx,
+						&ctx->svars[events[i].data.fd]);
+				if (ret) {
+					printf("[CPU %d]: Error on socket %d\n",
+							core, events[i].data.fd);
+				}
+			} else {
+				assert(0);
+			}
+		}
+
+		if (do_accept) {
+			while (1) {
+				ret = handle_accept(listener, ctx);
+				if (ret < 0) {
+					break;
+				}
+			}
+		}
+	}
+
+	epoll_ctl(ep, EPOLL_CTL_DEL, listener, NULL);
+	free(ctx);
 	pthread_exit(NULL);
 
 	return NULL;
@@ -159,17 +326,33 @@ static void usage(void)
 	exit(1);
 }
 
+static void init_request_manager(int i)
+{
+	gsq[i] = malloc(sizeof(struct sq));
+	if (!gsq[i]) {
+		printf("malloc failed\n");
+		return;
+	}
+
+	gcq[i] = malloc(sizeof(struct cq));
+	if (!gcq[i]) {
+		printf("malloc failed\n");
+		return;
+	}
+
+	TAILQ_INIT(gsq[i]);
+	TAILQ_INIT(gcq[i]);
+}
+
 int main(int argc, char *argv[])
 {
 	int option;
-	int proc = -1;
 	int core_limit = 0;
+	int cores[MAX_CPUS];
+	int ret;
 
-	while ((option = getopt(argc, argv, "c:n:")) != -1) {
+	while ((option = getopt(argc, argv, "n:")) != -1) {
 		switch (option) {
-			case 'c':
-				proc = strtol(optarg, NULL, 0);
-				break;
 			case 'n':
 				core_limit = strtol(optarg, NULL, 0);
 				break;
@@ -178,40 +361,33 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	proc = (proc == -1) ? 0 : proc;
 	core_limit = (core_limit == 0) ? 1 : core_limit;
 
-	// Request Manager init
-	request_manager rm[MAX_CPUS];
-	struct request_head sq[MAX_CPUS];
-	struct response_head cq[MAX_CPUS];
-	for (int i = proc; i < proc + core_limit; i++) {
-		TAILQ_INIT(&sq[i]);
-		TAILQ_INIT(&cq[i]);
+	for (int i = 0; i < core_limit; i++) {
+		cores[i] = i;
 
-		rm[i].cpu = i;
-		rm[i].sq = sq[i];
-		rm[i].cq = cq[i];
+		init_request_manager(i);
 
-		if (pthread_create(&reqThread, NULL, sq_worker, &rm[i]) != 0) {
-			perror("pthread_create failed");
+		ret = pthread_create(&httpThread[i], NULL, http_worker, &cores[i]);
+		if (ret) {
+			perror("pthread_create failed\n");
 			return -1;
 		}
 
-		if (pthread_create(&resThread, NULL, cq_worker, &rm[i]) != 0) {
-			perror("pthread_create failed");
+		ret = pthread_create(&gpuThread[i], NULL, gpu_worker, &cores[i]);
+		if (ret) {
+			perror("pthread_create failed\n");
+			return -1;
+		}
+
+		ret = pthread_create(&rmThread[i], NULL, rm_worker, &cores[i]);
+		if (ret) {
+			perror("pthread_create failed\n");
 			return -1;
 		}
 	}
 
-	// HTTP server init
-	int ret = init_httpServer(proc, core_limit, rm);
-	if (ret) {
-		printf("init_httpServer failed\n");
-		return -1;
-	}
-
-	poll_httpServer(proc, core_limit);
+	pthread_join(httpThread[0], NULL);
 
     return 0;
 }

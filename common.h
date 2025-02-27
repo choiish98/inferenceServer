@@ -19,46 +19,32 @@
 #include <sched.h>
 #include <sys/queue.h>
 
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+
 #define true 1
 #define false 0
 
 #define MAX_CPUS 16
 
 #define MODELNAME_SIZE 256
-#define IMAGE_SIZE 4096
-#define RESULT_SIZE 1024
+#define IMAGE_SIZE 10485760
+#define RESULT_SIZE 512
 
-TAILQ_HEAD(request_head, request_t);
-TAILQ_HEAD(response_head, response_t);
+TAILQ_HEAD(sq, request_t);
+TAILQ_HEAD(cq, request_t);
 
 typedef struct request_t
 {
 	int sock_id;
 	int ep;
 
+	int size;
 	char model[MODELNAME_SIZE];
 	char image[IMAGE_SIZE];
-	char result[RESULT_SIZE];
+	char *result;
 
 	TAILQ_ENTRY(request_t) req_entries;
 } request_t;
-
-typedef struct response_t
-{
-	int sock_id;
-	int ep;
-
-	char result[RESULT_SIZE];
-
-	TAILQ_ENTRY(response_t) res_entries;
-} response_t;
-
-typedef struct request_manager
-{
-	int cpu;
-
-	struct request_head sq;
-	struct response_head cq;
-} request_manager;
 
 #endif

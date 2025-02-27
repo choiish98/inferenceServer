@@ -51,8 +51,15 @@ int load_model(InferenceContext *ctx, const char *model) {
     return 0;
 }
 
+void print_hex(const unsigned char *data, int size) {
+    for (int i = 0; i < 16 && i < size; i++) {
+        printf("%02x ", data[i]);
+    }
+    printf("...\n");
+}
+
 // Preprocess data on CPU
-PyObject *preprocess_on_cpu(InferenceContext *ctx, char *image) {
+PyObject *preprocess_on_cpu(InferenceContext *ctx, char *image, int size) {
     PyObject *pFuncPreprocess = 
 		PyObject_GetAttrString(ctx->module, "preprocess");
     if (!pFuncPreprocess || !PyCallable_Check(pFuncPreprocess)) {
@@ -60,7 +67,8 @@ PyObject *preprocess_on_cpu(InferenceContext *ctx, char *image) {
         return NULL;
     }
 
-    PyObject *pArgsPreprocess = PyTuple_Pack(1, PyUnicode_FromString(image));
+	PyObject *pArgsPreprocess = PyTuple_Pack(1, 
+			PyBytes_FromStringAndSize(image, size));
     PyObject *pInput = PyObject_CallObject(pFuncPreprocess, pArgsPreprocess);
     Py_DECREF(pArgsPreprocess);
     Py_DECREF(pFuncPreprocess);
@@ -95,7 +103,7 @@ PyObject *run_inference(InferenceContext *ctx) {
 }
 
 // Postprocess the inference result on CPU
-PyObject *postprocess_on_cpu(InferenceContext *ctx) {
+char *postprocess_on_cpu(InferenceContext *ctx) {
     PyObject *pFuncPostprocess = 
 		PyObject_GetAttrString(ctx->module, "postprocess");
     if (!pFuncPostprocess || !PyCallable_Check(pFuncPostprocess)) {
@@ -114,7 +122,28 @@ PyObject *postprocess_on_cpu(InferenceContext *ctx) {
         return NULL;
     }
 
-    return pProcessedResult;
+	const char *result = NULL;
+	if (PyUnicode_Check(pProcessedResult)) {
+		result = PyUnicode_AsUTF8(pProcessedResult);
+	} else if (PyBytes_Check(pProcessedResult)) {
+		result = PyBytes_AsString(pProcessedResult);
+	} else {
+		PyObject *str_obj = PyObject_Str(pProcessedResult);
+		if (!str_obj) {
+			PyErr_Print();
+			return NULL;
+		}
+
+		result = PyUnicode_AsUTF8(str_obj);
+		Py_DECREF(str_obj);
+	}
+
+	if (!result) {
+		PyErr_Print();
+		return NULL;
+	}
+
+	return strdup(result);
 }
 
 // Free resources

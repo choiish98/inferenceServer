@@ -1,5 +1,6 @@
 import sys
 import os
+import io
 import torch
 import torchvision.models as models
 import torchvision.transforms as transforms
@@ -18,7 +19,7 @@ def load_model(model_name="resnet18"):
         raise ValueError(f"Unsupported model: {model_name}")
 
     model.eval()
-    model.to("cuda")  # Move model to GPU
+    model.to("cuda") 
     return model
 
 def load_resnet18():
@@ -33,8 +34,11 @@ def load_resnet50():
     model = models.resnet50(weights=ResNet50_weights.DEFAULT)
     return model
 
-def preprocess(image_path):
+def preprocess(data):
     """" Load an image, apply preprocessing transformations. """
+    if data is None or len(data) == 0:
+        raise ValueError("No image data provided.")
+    
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -42,8 +46,8 @@ def preprocess(image_path):
             std=[0.229, 0.224, 0.225])
     ])
     
-    image = Image.open(image_path).convert("RGB")
-    input_tensor = transform(image).unsqueeze(0).to("cuda")  # GPU로 데이터 이동
+    image = Image.open(io.BytesIO(data))
+    input_tensor = transform(image).unsqueeze(0).to("cuda") 
     
     return input_tensor
 
@@ -59,23 +63,22 @@ def postprocess(output_tensor, top_k=5):
     top_k_indices = probabilities.argsort()[0][-top_k:][::-1]
     top_k_probs = probabilities[0][top_k_indices]
     
-    # Load class labels
     script_dir = os.path.dirname(os.path.abspath(__file__))
     classes_path = os.path.join(script_dir, "data/imagenet_classes.txt")
 
     with open(classes_path) as f:
         labels = [line.strip() for line in f.readlines()]
     
-    results = [(labels[i], top_k_probs[idx]) for idx, i in enumerate(top_k_indices)]
+    results = [(labels[i].strip('",'), "{:.8f}".format(top_k_probs[idx])) for idx, i in enumerate(top_k_indices)]
     return results
 
 if __name__ == "__main__":
     # Example usage (this won't run in C; just for testing in Python)
     model = load_model()
-    input_tensor = preprocess("data/example.jpg")
+    data = Image.open("data/example.jpg")
+    input_tensor = preprocess(data)
     output_tensor = infer(model, input_tensor)
     results = postprocess(output_tensor)
-
     for label, prob in results:
         print(f"{label}: {prob:.4f}")
 

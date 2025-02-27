@@ -10,7 +10,6 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <assert.h>
-#include <json-c/json.h>  // JSON parsing 
 
 #define PORT 8080
 
@@ -21,17 +20,9 @@
 
 #define HTTP_HEADER_LEN 1024
 
-
 struct server_vars
 {
-	int keep_alive;
-
 	char buf[BUFFER_SIZE];
-
-	struct json_object *object;
-	struct json_object *model;
-	struct json_object *image;
-
 	char result[RESULT_SIZE];
 };
 
@@ -39,11 +30,14 @@ struct flow_context
 {
 	int ep;
 	struct server_vars svars[MAX_FLOW_NUM];
-
-	request_manager *rm;
 };
 
-int init_httpServer(int, int, request_manager *);
-void poll_httpServer(int, int);
+int handle_accept(int, struct flow_context *);
+int handle_write(int, struct flow_context *, struct server_vars *);
+int handle_read(int, struct flow_context *, struct server_vars *, request_t *);
+
+struct flow_context *init_server(int);
+int create_socket(int);
+void close_connection(int, int);
 
 #endif
